@@ -21,7 +21,8 @@ pub fn load_model() -> Model{
     let ln_f_weight = load_tensor(&file_data, &header, header_size, "ln_f.weight");
     let ln_f_bias = load_tensor(&file_data, &header, header_size, "ln_f.bias");
     let mut blocks: Vec<TransformerBlock> = Vec::new();
-    // loop through the 12 tensors
+    
+    // loop through the 12 transfomers 
     for i in 0..12 {
     let block = TransformerBlock {
         ln_1_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.ln_1.weight", i)),
