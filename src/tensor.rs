@@ -1,4 +1,5 @@
 use core::panic;
+use std::f32::NEG_INFINITY;
 
 #[derive(Debug)]
 pub struct Tensor {
@@ -56,32 +57,43 @@ impl Tensor{
         return result;
     }
 
-    pub fn softmax(&self) -> Tensor{
-        let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
-        let max = self.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let mut d = 0.0;
-        for val in self.data.iter(){
-            d += (val - max).exp()
+    pub fn softmax(&self) -> Tensor {
+        let mut result = Tensor::new(self.data.clone(), self.shape.clone());
+        let last_dim = self.shape[self.shape.len() - 1];
+        for i in 0..self.data.len() / last_dim {
+            let start = i * last_dim;
+            let end = start + last_dim;
+            let row = &self.data[start..end];
+            let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut d = 0.0;
+            for val in row.iter() {
+                d += (val - max).exp();
+            }
+            for (j, val) in row.iter().enumerate() {
+                result.data[start + j] = (val - max).exp() / d;
+            }
         }
-        for (i, val) in self.data.iter().enumerate(){
-            result.data[i] = (val - max).exp() / d;
-        }
-        
         return result;
     }
 
     pub fn layer_norm(&self, gamma: &Tensor, beta: &Tensor, epsilon: f32) -> Tensor{
         let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
-        let n = self.data.len() as f32;
-        let mean: f32 = self.data.iter().sum::<f32>() / n;
-        let mut variance = 0.0;
-        for val in self.data.iter(){
-            variance += (val - mean).powi(2);
-        }
-        variance = variance / n;
-
-        for (i, _val) in self.data.iter().enumerate(){
-            result.data[i] = ((self.data[i] - mean)/(variance + epsilon).sqrt())*gamma.data[i] + beta.data[i];
+        let last_dim = self.shape[self.shape.len() - 1];
+        let n = last_dim as f32;
+        for i in 0..self.data.len() / last_dim{
+            let start = i * last_dim;
+            let end = start + last_dim;
+            let row: &[f32] = &self.data[start..end];
+            let mean: f32 = row.iter().sum::<f32>() / n;
+            let mut variance = 0.0;
+            for val in row.iter(){
+                variance += (val - mean).powi(2);
+            }
+            variance = variance / n;
+    
+            for (j, _val) in row.iter().enumerate(){
+                result.data[j+start] = ((self.data[j+start] - mean)/(variance + epsilon).sqrt())*gamma.data[j] + beta.data[j];
+            }
         }
 
         return result;
@@ -92,6 +104,19 @@ impl Tensor{
         let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
         for (i, val) in self.data.iter().enumerate(){
             result.data[i] = 0.5 * val * (1.0 + (0.7978845608 * (val + 0.044715 * val.powi(3))).tanh());
+        }
+
+        return result;
+    }
+
+    pub fn apply_causal_mask(&self) -> Tensor{
+        let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
+        let last_dim = self.shape[self.shape.len() - 1];
+         for i in 0..self.shape[0]{
+            let start = i * last_dim;
+            for j in (i+1)..last_dim{
+                result.data[start + j] = f32::NEG_INFINITY;
+            }
         }
 
         return result;
@@ -115,14 +140,28 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
 }
 
 pub fn add(a: &Tensor, b: &Tensor) -> Tensor {
-    if a.shape != b.shape {
-        panic!("Shapes do not match");
+    if a.shape.len() == 2 && b.shape.len() == 1 {
+        let mut result = Tensor::new(a.data.clone(), a.shape.clone());
+        let last_dim = a.shape[a.shape.len() - 1];
+        for i in 0..a.data.iter().len() / last_dim{
+            let start = i * last_dim;
+            let end = start + last_dim;
+            let row = &a.data[start..end];
+            for (j,_val) in row.iter().enumerate(){
+                result.data[start + j] = a.data[start + j] + b.data[j];
+            }
+        }
+        return result;
+    }else{
+        if a.shape != b.shape {
+            panic!("Shapes do not match");
+        }
+        let data: Vec<f32> = a.data.iter()
+            .zip(b.data.iter())
+            .map(|(x, y)| x + y)
+            .collect();
+        Tensor::new(data, a.shape.clone())
     }
-    let data: Vec<f32> = a.data.iter()
-        .zip(b.data.iter())
-        .map(|(x, y)| x + y)
-        .collect();
-    Tensor::new(data, a.shape.clone())
 }
 
 pub fn mul(a: &Tensor, b: &Tensor) -> Tensor {
