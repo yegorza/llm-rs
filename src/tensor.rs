@@ -127,13 +127,12 @@ impl Tensor{
 pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let mut result = Tensor::new(vec![0.0], vec![a.shape[0], b.shape[1]]);
     result.zeros();
-    for row in 0..a.shape[0]{
-        for col in 0..b.shape[1]{
-            let mut sum: f32 = 0.0;
-            for i in 0..a.shape[1]{
-                sum += a.get(vec![row,i]) * b.get(vec![i, col]); 
+    for row in 0..a.shape[0] {
+        for k in 0..a.shape[1] {
+            let a_val = a.data[row * a.shape[1] + k];
+            for col in 0..b.shape[1] {
+                result.data[row * b.shape[1] + col] += a_val * b.data[k * b.shape[1] + col];
             }
-            result.set(vec![row, col], sum);
         }
     }
     return result;

@@ -16,13 +16,13 @@ pub fn forward(model: &Model, token_ids: &[usize]) -> Tensor{
 
     for block in &model.blocks {
         // layer norm 1
-        println!("hidden shape: {:?}", hidden.shape);
-        println!("&block.ln_1_bias shape: {:?}", &block.ln_1_bias.shape);
+        // println!("hidden shape: {:?}", hidden.shape);
+        // println!("&block.ln_1_bias shape: {:?}", &block.ln_1_bias.shape);
         let ln1_out = hidden.layer_norm(&block.ln_1_weight, &block.ln_1_bias, 1e-5);
         
         // TODO: attention
-        println!("ln1_out shape: {:?}", ln1_out.shape);
-        println!("c_attn_weight shape: {:?}", &block.c_attn_weight.shape);
+        // println!("ln1_out shape: {:?}", ln1_out.shape);
+        // println!("c_attn_weight shape: {:?}", &block.c_attn_weight.shape);
         let qkv = add(&matmul(&ln1_out, &block.c_attn_weight), &block.c_attn_bias);
         let (q, k, v) = split_into_qkv(&qkv);
         let q_heads = split_into_heads(&q, 12);
@@ -46,15 +46,15 @@ pub fn forward(model: &Model, token_ids: &[usize]) -> Tensor{
         hidden = add(&hidden, &attention_out);
         
         // layer norm 2
-        println!("hidden shape: {:?}", hidden.shape);
-        println!("&block.ln_2_weight shape: {:?}", &block.ln_2_weight.shape);
+        // println!("hidden shape: {:?}", hidden.shape);
+        // println!("&block.ln_2_weight shape: {:?}", &block.ln_2_weight.shape);
         let ln2_out = hidden.layer_norm(&block.ln_2_weight, &block.ln_2_bias, 1e-5);
         
         // feedforward
-        println!("ln2_out shape: {:?}", &ln2_out.shape);
-        println!("&block.mlp_fc_weight shape: {:?}", &block.mlp_fc_weight.shape);
+        // println!("ln2_out shape: {:?}", &ln2_out.shape);
+        // println!("&block.mlp_fc_weight shape: {:?}", &block.mlp_fc_weight.shape);
         let fc_out_mul = &matmul(&ln2_out, &block.mlp_fc_weight);
-        println!("&fc_out_mul shape: {:?}", &fc_out_mul.shape);
+        // println!("&fc_out_mul shape: {:?}", &fc_out_mul.shape);
         let fc_out = add(&fc_out_mul, &block.mlp_fc_bias);
         let gelu_out = fc_out.gelu();
         let mut proj_out = matmul(&gelu_out, &block.mlp_proj_weight);
