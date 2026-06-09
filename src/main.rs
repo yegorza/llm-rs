@@ -13,11 +13,11 @@ fn main() {
 
     // loading initial data
     let model = loader::load_model();
-    let tokenizer = Tokenizer::new("models/vocab.json");
+    let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
     let start = Instant::now();
 
     // inference loop
-    let mut token_ids: Vec<usize> = vec![15496, 995]; 
+    let mut token_ids = tokenizer.encode("How many days in a week");
     for _ in 0..10 {
         let logits = forward(&model, &token_ids);
         let next_token = logits.data
