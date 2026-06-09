@@ -1,43 +1,69 @@
-use crate::{model::Model, tensor::{Tensor, add, matmul, mul}};
+use crate::{model::{KVCache, Model}, tensor::{Tensor, add, matmul, mul}};
 
-pub fn forward(model: &Model, token_ids: &[usize]) -> Tensor{
+pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &Tensor) -> Tensor{
     // look up token ids in wte and position wpe and then add
     let mut input: Vec<f32> = Vec::new();
+    let position_offset = if cache.is_some() {
+        cache.as_ref().unwrap().k[0][0].shape[0] // how many tokens already cached
+    } else {
+        0
+    };
     for (i, id) in token_ids.iter().enumerate(){
         let start = id * 768;
         let end = start + 768;
         let meaning_embedding = &model.wte.data[start..end];
-        let position_embedding = &model.wpe.data[i*768..(i+1)*768];
+        let pos_i = i + position_offset; // figure out true position of new token after cached values
+        let position_embedding = &model.wpe.data[pos_i*768..(pos_i+1)*768];
         for j in 0..768 {
             input.push(meaning_embedding[j] + position_embedding[j]);
         }
     }
     let mut hidden = Tensor::new(input, vec![token_ids.len(), 768]);
 
-    for block in &model.blocks {
+    // init the cache
+    if cache.is_none() {
+        *cache = Some(KVCache {
+            k: vec![Vec::new(); 12],
+            v: vec![Vec::new(); 12],
+        });
+    }
+
+    for (layer_idx, block) in model.blocks.iter().enumerate() {
         // layer norm 1
-        // println!("hidden shape: {:?}", hidden.shape);
-        // println!("&block.ln_1_bias shape: {:?}", &block.ln_1_bias.shape);
         let ln1_out = hidden.layer_norm(&block.ln_1_weight, &block.ln_1_bias, 1e-5);
         
-        // TODO: attention
-        // println!("ln1_out shape: {:?}", ln1_out.shape);
-        // println!("c_attn_weight shape: {:?}", &block.c_attn_weight.shape);
+        // attention
         let qkv = add(&matmul(&ln1_out, &block.c_attn_weight), &block.c_attn_bias);
         let (q, k, v) = split_into_qkv(&qkv);
         let q_heads = split_into_heads(&q, 12);
         let k_heads = split_into_heads(&k, 12);
         let v_heads = split_into_heads(&v, 12);
 
+        if cache.as_ref().unwrap().k[layer_idx].is_empty() {
+            for head_idx in 0..12 {
+                let c = cache.as_mut().unwrap();
+                c.k[layer_idx].push(k_heads[head_idx].clone());
+                c.v[layer_idx].push(v_heads[head_idx].clone());
+            }
+        } else {
+            for head_idx in 0..12 {
+                let c = cache.as_mut().unwrap();
+                c.k[layer_idx][head_idx] = concat(&c.k[layer_idx][head_idx], &k_heads[head_idx]);
+                c.v[layer_idx][head_idx] = concat(&c.v[layer_idx][head_idx], &v_heads[head_idx]);
+            }
+        }
+
         let mut head_outputs: Vec<Tensor> = Vec::new();
 
         for i in 0..12{
-            let mut scores = matmul(&q_heads[i], &k_heads[i].transpose());
+            let mut scores = matmul(&q_heads[i], &cache.as_ref().unwrap().k[layer_idx][i].transpose());
             let div = Tensor{data: vec![1.0/8.0; scores.shape[0]*scores.shape[1]], shape: scores.shape.clone()};
             scores = mul(&scores, &div);
-            scores = scores.apply_causal_mask();
+            if scores.shape[0] > 1 {
+                scores = scores.apply_causal_mask();
+            }
             let weights = scores.softmax();
-            let head_out = matmul(&weights, &v_heads[i]);
+            let head_out = matmul(&weights, &cache.as_ref().unwrap().v[layer_idx][i]);
             head_outputs.push(head_out);
         }
 
@@ -63,7 +89,7 @@ pub fn forward(model: &Model, token_ids: &[usize]) -> Tensor{
     }
 
     hidden = hidden.layer_norm(&model.ln_f_weight, &model.ln_f_bias, 1e-5);
-    let logits = matmul(&hidden, &model.wte.transpose());
+    let logits = matmul(&hidden, &wte_t);
     let last_row = &logits.data[logits.data.len() - 50257..];
     return Tensor::new(last_row.to_vec(), vec![50257]);
 
@@ -119,4 +145,10 @@ fn concatenate_heads(heads: &Vec<Tensor>) -> Tensor {
     }
 
     Tensor::new(data, vec![seq_len, heads.len() * head_dim])
+}
+
+fn concat(a: &Tensor, b: &Tensor) -> Tensor {
+    let mut data = a.data.clone();
+    data.extend(&b.data);
+    Tensor::new(data, vec![a.shape[0] + b.shape[0], a.shape[1]])
 }

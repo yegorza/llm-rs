@@ -24,3 +24,8 @@ pub struct TransformerBlock {
     pub mlp_proj_weight: Tensor,
     pub mlp_proj_bias: Tensor,
 }
+
+pub struct KVCache {
+    pub k: Vec<Vec<Tensor>>,  // k[layer][head]
+    pub v: Vec<Vec<Tensor>>,  // v[layer][head]
+}

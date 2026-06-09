@@ -1,7 +1,7 @@
 use core::panic;
 use std::f32::NEG_INFINITY;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tensor {
     pub data: Vec<f32>,
     pub shape: Vec<usize>
