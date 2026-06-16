@@ -3,7 +3,7 @@ mod loader;
 mod model;
 mod forward;
 mod tokenizer;
-use tensor::{Tensor, matmul, add, mul};
+use tensor::{Tensor};
 use std::time::Instant;
 use rand::Rng;
 
@@ -33,14 +33,19 @@ fn main() {
         // random weighted sample
         let mut rng = rand::thread_rng();
         let roll: f32 = rng.r#gen();  // random number between 0 and 1
-        let k = 50;
         let mut indexed: Vec<(usize, f32)> = probs.data.iter().enumerate().map(|(i, &p)| (i, p)).collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         
         // zero out everything after top k
         let mut filtered = vec![0.0f32; 50257];
-        for j in 0..k {
-            filtered[indexed[j].0] = indexed[j].1;
+        let p = 0.9;
+        let mut cumulative = 0.0;
+        for i in 0..50257 {
+            filtered[indexed[i].0] = indexed[i].1;
+            cumulative += indexed[i].1;
+            if cumulative > p {
+                break;
+            }
         }
         let sum: f32 = filtered.iter().sum();
         let filtered: Vec<f32> = filtered.iter().map(|x| x / sum).collect();
