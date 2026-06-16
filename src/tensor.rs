@@ -140,11 +140,24 @@ pub fn quantize(tensor: &Tensor) -> QuantizedTensor {
 pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let mut result = Tensor::new(vec![0.0], vec![a.shape[0], b.shape[1]]);
     result.zeros();
-    for row in 0..a.shape[0] {
-        for k in 0..a.shape[1] {
-            let a_val = a.data[row * a.shape[1] + k];
-            for col in 0..b.shape[1] {
-                result.data[row * b.shape[1] + col] += a_val * b.data[k * b.shape[1] + col];
+    let tile = 32;
+    for row_start in (0..a.shape[0]).step_by(tile) {
+        for col_start in (0..b.shape[1]).step_by(tile) {
+            for k_start in (0..a.shape[1]).step_by(tile) {
+                let row_end = (row_start + tile).min(a.shape[0]);
+                let k_end = (k_start + tile).min(a.shape[1]);
+                let col_end = (col_start + tile).min(b.shape[1]);
+                for row in row_start..row_end {
+                    for k in k_start..k_end {
+                        let a_val = a.data[row * a.shape[1] + k];
+                        for col in col_start..col_end {
+                            unsafe {
+                                *result.data.get_unchecked_mut(row * b.shape[1] + col) += 
+                                    a_val * *b.data.get_unchecked(k * b.shape[1] + col);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -195,7 +208,10 @@ pub fn matmul_quantized(a: &Tensor, b: &QuantizedTensor) -> Tensor{
         for k in 0..a.shape[1] {
             let a_val = a.data[row * a.shape[1] + k];
             for col in 0..b.shape[1] {
-                result.data[row * b.shape[1] + col] += a_val * b.data[k * b.shape[1] + col] as f32 * factor;
+                unsafe {
+                    *result.data.get_unchecked_mut(row * b.shape[1] + col) += 
+                        a_val * *b.data.get_unchecked(k * b.shape[1] + col) as f32 * factor;
+                }
             }
         }
     }
