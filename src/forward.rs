@@ -1,6 +1,6 @@
-use crate::{model::{KVCache, Model}, tensor::{Tensor, add, matmul, mul}};
+use crate::{model::{KVCache, Model}, tensor::{QuantizedTensor, Tensor, add, matmul, matmul_quantized, mul}};
 
-pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &Tensor) -> Tensor{
+pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &QuantizedTensor) -> Tensor{
     // look up token ids in wte and position wpe and then add
     let mut input: Vec<f32> = Vec::new();
     let position_offset = if cache.is_some() {
@@ -33,7 +33,7 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         let ln1_out = hidden.layer_norm(&block.ln_1_weight, &block.ln_1_bias, 1e-5);
         
         // attention
-        let qkv = add(&matmul(&ln1_out, &block.c_attn_weight), &block.c_attn_bias);
+        let qkv = add(&matmul_quantized(&ln1_out, &block.c_attn_weight), &block.c_attn_bias);
         let (q, k, v) = split_into_qkv(&qkv);
         let q_heads = split_into_heads(&q, 12);
         let k_heads = split_into_heads(&k, 12);
@@ -68,7 +68,7 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         }
 
         let concatenated = concatenate_heads(&head_outputs);
-        let attention_out = add(&matmul(&concatenated, &block.c_proj_weight), &block.c_proj_bias);
+        let attention_out = add(&matmul_quantized(&concatenated, &block.c_proj_weight), &block.c_proj_bias);
         hidden = add(&hidden, &attention_out);
         
         // layer norm 2
@@ -79,17 +79,17 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         // feedforward
         // println!("ln2_out shape: {:?}", &ln2_out.shape);
         // println!("&block.mlp_fc_weight shape: {:?}", &block.mlp_fc_weight.shape);
-        let fc_out_mul = &matmul(&ln2_out, &block.mlp_fc_weight);
+        let fc_out_mul = &matmul_quantized(&ln2_out, &block.mlp_fc_weight);
         // println!("&fc_out_mul shape: {:?}", &fc_out_mul.shape);
         let fc_out = add(&fc_out_mul, &block.mlp_fc_bias);
         let gelu_out = fc_out.gelu();
-        let mut proj_out = matmul(&gelu_out, &block.mlp_proj_weight);
+        let mut proj_out = matmul_quantized(&gelu_out, &block.mlp_proj_weight);
         proj_out = add(&proj_out, &block.mlp_proj_bias);
         hidden = add(&hidden, &proj_out);
     }
 
     hidden = hidden.layer_norm(&model.ln_f_weight, &model.ln_f_bias, 1e-5);
-    let logits = matmul(&hidden, &wte_t);
+    let logits = matmul_quantized(&hidden, &wte_t);
     let last_row = &logits.data[logits.data.len() - 50257..];
     return Tensor::new(last_row.to_vec(), vec![50257]);
 

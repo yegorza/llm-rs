@@ -8,7 +8,7 @@ use std::time::Instant;
 use rand::Rng;
 
 
-use crate::{forward::forward, model::KVCache, tokenizer::Tokenizer};
+use crate::{forward::forward, model::KVCache, tensor::quantize, tokenizer::Tokenizer};
 
 fn main() {
 
@@ -17,12 +17,14 @@ fn main() {
     let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
     let start = Instant::now();
     let mut cache: Option<KVCache> = None;
-    let wte_t = model.wte.transpose();
+    let wte_t = quantize(&model.wte.transpose());
 
     // inference loop
     let mut token_ids = tokenizer.encode("How many days in a week");
     let mut logits = forward(&model, &token_ids, &mut cache, &wte_t);
     let temperature = 0.8;
+
+    
     for _ in 0..50 {
         let scaled: Vec<f32> = logits.data.iter().map(|x| x / temperature).collect();
         let scaled_tensor = Tensor::new(scaled, vec![50257]);

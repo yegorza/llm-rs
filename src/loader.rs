@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::tensor::{self, Tensor};
+use crate::tensor::{self, Tensor, quantize};
 use crate::model::{Model, TransformerBlock};
 
 
@@ -27,15 +27,15 @@ pub fn load_model() -> Model{
     let block = TransformerBlock {
         ln_1_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.ln_1.weight", i)),
         ln_1_bias: load_tensor(&file_data, &header, header_size, &format!("h.{}.ln_1.bias", i)),
-        c_attn_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.attn.c_attn.weight", i)),
+        c_attn_weight: quantize(&load_tensor(&file_data, &header, header_size, &format!("h.{}.attn.c_attn.weight", i))),
         c_attn_bias: load_tensor(&file_data, &header, header_size, &format!("h.{}.attn.c_attn.bias", i)),
-        c_proj_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.attn.c_proj.weight", i)),
+        c_proj_weight: quantize(&load_tensor(&file_data, &header, header_size, &format!("h.{}.attn.c_proj.weight", i))),
         c_proj_bias: load_tensor(&file_data, &header, header_size, &format!("h.{}.attn.c_proj.bias", i)),
         ln_2_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.ln_2.weight", i)),
         ln_2_bias: load_tensor(&file_data, &header, header_size, &format!("h.{}.ln_2.bias", i)),
-        mlp_fc_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.mlp.c_fc.weight", i)),
+        mlp_fc_weight: quantize(&load_tensor(&file_data, &header, header_size, &format!("h.{}.mlp.c_fc.weight", i))),
         mlp_fc_bias: load_tensor(&file_data, &header, header_size, &format!("h.{}.mlp.c_fc.bias", i)),
-        mlp_proj_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.mlp.c_proj.weight", i)),
+        mlp_proj_weight: quantize(&load_tensor(&file_data, &header, header_size, &format!("h.{}.mlp.c_proj.weight", i))),
         mlp_proj_bias: load_tensor(&file_data, &header, header_size, &format!("h.{}.mlp.c_proj.bias", i)),
         };
         blocks.push(block);

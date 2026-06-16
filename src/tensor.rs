@@ -7,6 +7,12 @@ pub struct Tensor {
     pub shape: Vec<usize>
 }
 
+pub struct QuantizedTensor {
+    pub data: Vec<i8>,
+    pub scale: f32,
+    pub shape: Vec<usize>,
+}
+
 impl Tensor{
     pub fn new(data: Vec<f32>, shape: Vec<usize>) -> Self {
         Self {
@@ -124,6 +130,13 @@ impl Tensor{
 
 }
 
+
+pub fn quantize(tensor: &Tensor) -> QuantizedTensor {
+    let absmax = tensor.data.iter().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
+    let data: Vec<i8> = tensor.data.iter().map(|x| (x / absmax * 127.0).round() as i8).collect();
+    QuantizedTensor { data, scale: absmax, shape: tensor.shape.clone() }
+
+}
 pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let mut result = Tensor::new(vec![0.0], vec![a.shape[0], b.shape[1]]);
     result.zeros();
@@ -172,4 +185,19 @@ pub fn mul(a: &Tensor, b: &Tensor) -> Tensor {
         .map(|(x, y)| x * y)
         .collect();
     Tensor::new(data, a.shape.clone())
+}
+
+pub fn matmul_quantized(a: &Tensor, b: &QuantizedTensor) -> Tensor{
+    let mut result = Tensor::new(vec![0.0], vec![a.shape[0], b.shape[1]]);
+    let factor = b.scale / 127.0;
+    result.zeros();
+    for row in 0..a.shape[0] {
+        for k in 0..a.shape[1] {
+            let a_val = a.data[row * a.shape[1] + k];
+            for col in 0..b.shape[1] {
+                result.data[row * b.shape[1] + col] += a_val * b.data[k * b.shape[1] + col] as f32 * factor;
+            }
+        }
+    }
+    return result;
 }
