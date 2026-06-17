@@ -20,9 +20,10 @@ fn main() {
     let mut token_ids = tokenizer.encode("How many days in a week");
     let mut logits = forward(&model, &token_ids, &mut cache, &wte_t);
     let temperature = 0.8;
+    let token_count = 50;
 
     
-    for _ in 0..50 {
+    for _ in 0..token_count {
         let scaled: Vec<f32> = logits.data.iter().map(|x| x / temperature).collect();
         let scaled_tensor = Tensor::new(scaled, vec![50257]);
         let probs = scaled_tensor.softmax();
@@ -60,5 +61,8 @@ fn main() {
         token_ids.push(next_token);
         logits = forward(&model, &[*token_ids.last().unwrap()], &mut cache, &wte_t);
     }
-    println!("took: {:?}", start.elapsed());
+    let elapsed = start.elapsed().as_secs_f32();
+    println!("tokens: {}", token_count);
+    println!("time: {:.2}s", elapsed);
+    println!("tokens/sec: {:.2}", token_count as f32 / elapsed);
 }
