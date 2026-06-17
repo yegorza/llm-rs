@@ -1,0 +1,29 @@
+{
+  "name": "llm-rs",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "napi build --platform --features napi-binding",
+    "build:release": "napi build --platform --release --features napi-binding",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "napi": {
+    "binaryName": "llm-rs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yegorza/llm-rs.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/yegorza/llm-rs/issues"
+  },
+  "homepage": "https://github.com/yegorza/llm-rs#readme",
+  "description": "",
+  "devDependencies": {
+    "@napi-rs/cli": "^3.7.2"
+  }
+}

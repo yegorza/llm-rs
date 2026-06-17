@@ -1,4 +1,5 @@
-use crate::{Tensor, tensor::QuantizedTensor};
+use crate::tensor::{Tensor, QuantizedTensor};
+
 pub struct Model {
     pub wte: Tensor,      // [50257, 768]
     pub wpe: Tensor,      // [1024, 768]
