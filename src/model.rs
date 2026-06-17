@@ -1,12 +1,18 @@
 use crate::tensor::{Tensor, QuantizedTensor};
 
+pub struct ModelConfig {
+    pub n_layers: usize,
+    pub n_heads: usize,
+    pub n_embed: usize,
+    pub n_vocab: usize,
+    pub head_dim: usize,
+}
+
 pub struct Model {
-    pub wte: Tensor,      // [50257, 768]
-    pub wpe: Tensor,      // [1024, 768]
-
+    pub config: ModelConfig,
+    pub wte: Tensor,
+    pub wpe: Tensor,
     pub blocks: Vec<TransformerBlock>,
-
-    // final layer norm
     pub ln_f_weight: Tensor,
     pub ln_f_bias: Tensor,
 }

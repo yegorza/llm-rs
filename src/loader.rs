@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use crate::tensor::{self, Tensor, quantize};
-use crate::model::{Model, TransformerBlock};
+use crate::model::{Model, ModelConfig, TransformerBlock};
 
 
 pub fn load_model() -> Model{
@@ -20,10 +20,18 @@ pub fn load_model() -> Model{
     let wpe = load_tensor(&file_data, &header, header_size, "wpe.weight");
     let ln_f_weight = load_tensor(&file_data, &header, header_size, "ln_f.weight");
     let ln_f_bias = load_tensor(&file_data, &header, header_size, "ln_f.bias");
+
+    let n_vocab = wte.shape[0];
+    let n_embed = wte.shape[1];
+    let n_layers = header.as_object().unwrap().keys()
+        .filter(|k| k.starts_with("h.") && k.ends_with(".ln_1.weight"))
+        .count();
+    let head_dim = 64; // GPT-2 always uses 64
+    let n_heads = n_embed / head_dim;
+
     let mut blocks: Vec<TransformerBlock> = Vec::new();
-    
-    // loop through the 12 transfomers 
-    for i in 0..12 {
+
+    for i in 0..n_layers {
     let block = TransformerBlock {
         ln_1_weight: load_tensor(&file_data, &header, header_size, &format!("h.{}.ln_1.weight", i)),
         ln_1_bias: load_tensor(&file_data, &header, header_size, &format!("h.{}.ln_1.bias", i)),
@@ -41,7 +49,8 @@ pub fn load_model() -> Model{
         blocks.push(block);
     }
     
-    let model: Model = Model { wte, wpe, blocks, ln_f_weight, ln_f_bias };
+    let config = ModelConfig { n_layers, n_heads, n_embed, n_vocab, head_dim };
+    let model: Model = Model { config, wte, wpe, blocks, ln_f_weight, ln_f_bias };
 
     return model;
 }
