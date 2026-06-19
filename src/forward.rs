@@ -57,14 +57,12 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         let mut head_outputs: Vec<Tensor> = Vec::new();
 
         for i in 0..cfg.n_heads {
-            let mut scores = matmul(&q_heads[i], &cache.as_ref().unwrap().k[layer_idx][i].transpose());
-            let div = Tensor{data: vec![scale; scores.shape[0]*scores.shape[1]], shape: scores.shape.clone()};
-            scores = mul(&scores, &div);
-            if scores.shape[0] > 1 {
-                scores = scores.apply_causal_mask();
-            }
-            let weights = scores.softmax();
-            let head_out = matmul(&weights, &cache.as_ref().unwrap().v[layer_idx][i]);
+            let head_out = flash_attention(
+                &q_heads[i],
+                &cache.as_ref().unwrap().k[layer_idx][i],
+                &cache.as_ref().unwrap().v[layer_idx][i],
+                scale
+            );
             head_outputs.push(head_out);
         }
 
@@ -143,4 +141,35 @@ fn concat(a: &Tensor, b: &Tensor) -> Tensor {
     let mut data = a.data.clone();
     data.extend(&b.data);
     Tensor::new(data, vec![a.shape[0] + b.shape[0], a.shape[1]])
+}
+
+
+fn flash_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Tensor{
+    let mut result_data: Vec<f32> = Vec::new();
+    for i in 0..q.shape[0]{
+        let row = &q.data[i*q.shape[1]..(i+1)*q.shape[1]];
+        let mut running_max = f32::NEG_INFINITY;
+        let mut d_i = 0.0;
+        let mut output = vec![0.0; q.shape[1]];
+
+        for j in 0..k.shape[0]{
+            if q.shape[0] > 1 && j > i {
+                continue;
+            }
+            let k_row = &k.data[j*k.shape[1]..(j+1)*k.shape[1]];
+            let score: f32 = row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f32>() * scale;
+            let new_max = running_max.max(score);
+            let old_d_i = d_i;
+            d_i = d_i*(running_max - new_max).exp() + (score - new_max).exp();
+            let correction = (old_d_i / d_i) * (running_max - new_max).exp();
+            let new_weight = (score - new_max).exp() / d_i;
+            let v_row = &v.data[j * v.shape[1]..(j + 1) * v.shape[1]];
+            for e in 0..q.shape[1] {
+                output[e] = output[e] * correction + new_weight * v_row[e];
+            }
+            running_max = new_max;
+        }
+        result_data.extend_from_slice(&output);
+    }
+    return Tensor { data: result_data, shape: vec![q.shape[0], k.shape[1]] };
 }
