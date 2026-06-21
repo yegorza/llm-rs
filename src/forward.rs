@@ -151,21 +151,54 @@ fn flash_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Tensor{
         let mut running_max = f32::NEG_INFINITY;
         let mut d_i = 0.0;
         let mut output = vec![0.0; q.shape[1]];
+        
+        let tile_size = 32;
 
-        for j in 0..k.shape[0]{
-            if q.shape[0] > 1 && j > i {
-                continue;
+        for j_start in (0..k.shape[0]).step_by(tile_size){
+            
+            let j_end = (j_start + tile_size).min(k.shape[0]);
+            let k_tile = &k.data[j_start * k.shape[1]..j_end * k.shape[1]];
+            let v_tile = &v.data[j_start * v.shape[1]..j_end * v.shape[1]];
+            let tile_len = j_end - j_start;
+            
+            // mat mul query vec by key tensor
+            let q_row_tensor = Tensor::new(row.to_vec(), vec![1, q.shape[1]]);
+            let k_tile_tensor = Tensor::new(k_tile.to_vec(), vec![tile_len, k.shape[1]]);
+            let mut scores = matmul(&q_row_tensor, &k_tile_tensor.transpose());
+            
+            for t in 0..tile_len {
+                scores.data[t] *= scale;
             }
-            let k_row = &k.data[j*k.shape[1]..(j+1)*k.shape[1]];
-            let score: f32 = row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f32>() * scale;
-            let new_max = running_max.max(score);
+            // ensure tokens dont look ahead during prefill
+            if q.shape[0] > 1 {
+                for t in 0..tile_len {
+                    if j_start + t > i {
+                        scores.data[t] = f32::NEG_INFINITY;
+                    }
+                }
+            }
+            
+            // update max
+            let tile_max = scores.data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let new_max = running_max.max(tile_max);
+
             let old_d_i = d_i;
-            d_i = d_i*(running_max - new_max).exp() + (score - new_max).exp();
+            d_i = d_i * (running_max - new_max).exp(); // apply correction
+            for t in 0..tile_len {
+                d_i += (scores.data[t] - new_max).exp(); // sum up new terms
+            }
+
             let correction = (old_d_i / d_i) * (running_max - new_max).exp();
-            let new_weight = (score - new_max).exp() / d_i;
-            let v_row = &v.data[j * v.shape[1]..(j + 1) * v.shape[1]];
             for e in 0..q.shape[1] {
-                output[e] = output[e] * correction + new_weight * v_row[e];
+                output[e] = output[e] * correction;
+            }
+            // update the values for each tile
+            for t in 0..tile_len{
+                let new_weight = (scores.data[t] - new_max).exp() / d_i;
+                let v_row = &v_tile[t * v.shape[1]..(t + 1) * v.shape[1]];
+                for e in 0..q.shape[1] {
+                    output[e] += new_weight * v_row[e];
+                }
             }
             running_max = new_max;
         }
