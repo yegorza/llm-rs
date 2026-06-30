@@ -1,6 +1,6 @@
 use crate::{model::{KVCache, Model}, tensor::{QuantizedTensor, Tensor, add, matmul, matmul_quantized, mul}};
 
-pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &QuantizedTensor) -> Tensor{
+pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &QuantizedTensor, full_logits: bool) -> Tensor{
     let cfg = &model.config;
 
     let position_offset = if cache.is_some() {
@@ -81,9 +81,14 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
     }
 
     hidden = hidden.layer_norm(&model.ln_f_weight, &model.ln_f_bias, 1e-5);
+    
     let logits = matmul_quantized(&hidden, &wte_t);
-    let last_row = &logits.data[logits.data.len() - cfg.n_vocab..];
-    Tensor::new(last_row.to_vec(), vec![cfg.n_vocab])
+    if full_logits {
+        return logits;
+    } else {
+        let last_row = &logits.data[logits.data.len() - cfg.n_vocab..];
+        return Tensor::new(last_row.to_vec(), vec![cfg.n_vocab]);
+    }
 }
 
 fn split_into_qkv(qkv_tensor: &Tensor) -> (Tensor, Tensor, Tensor){

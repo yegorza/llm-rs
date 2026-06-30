@@ -13,13 +13,13 @@ pub mod tokenizer;
 
 #[cfg_attr(feature = "napi-binding", napi)]
 pub fn generate(prompt: String, max_tokens: i32) -> String {
-    let model = loader::load_model();
+    let model = loader::load_model("models/gpt2-medium.safetensors");
     let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
     let mut cache: Option<KVCache> = None;
     let wte_t = quantize(&model.wte.transpose());
 
     let mut token_ids = tokenizer.encode(&prompt);
-    let mut logits = forward::forward(&model, &token_ids, &mut cache, &wte_t);
+    let mut logits = forward::forward(&model, &token_ids, &mut cache, &wte_t, false);
     let temperature = 0.8;
     let mut output = String::new();
 
@@ -57,7 +57,7 @@ pub fn generate(prompt: String, max_tokens: i32) -> String {
 
         output.push_str(&tokenizer.decode(&next_token));
         token_ids.push(next_token);
-        logits = forward::forward(&model, &[*token_ids.last().unwrap()], &mut cache, &wte_t);
+        logits = forward::forward(&model, &[*token_ids.last().unwrap()], &mut cache, &wte_t,false);
     }
 
     output

@@ -4,8 +4,8 @@ use crate::tensor::{self, Tensor, quantize};
 use crate::model::{Model, ModelConfig, TransformerBlock};
 
 
-pub fn load_model() -> Model{
-    let file_data: Vec<u8> = std::fs::read("models/model.safetensors").unwrap();
+pub fn load_model(file_path: &str) -> Model{
+    let file_data: Vec<u8> = std::fs::read(file_path).unwrap();
 
     let header_size = u64::from_le_bytes([
         file_data[0], file_data[1], file_data[2], file_data[3],
