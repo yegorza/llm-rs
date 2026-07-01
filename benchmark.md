@@ -12,3 +12,13 @@
 
 - Tokens/sec: 2.31
 - Config: 24 layers, 16 heads, 1024 embed dim
+
+**2026-07-01**
+
+- After adding
+
+### GPT-2 Medium (350M)
+
+- tokens: 200
+- time: 30.25s
+- tokens/sec: 6.61

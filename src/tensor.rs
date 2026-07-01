@@ -1,6 +1,20 @@
 use core::panic;
 use std::f32::NEG_INFINITY;
 
+#[cfg(target_os = "macos")]
+#[link(name = "Accelerate", kind = "framework")]
+unsafe extern "C" {
+    fn cblas_sgemm(
+        order: i32, transA: i32, transB: i32,
+        m: i32, n: i32, k: i32,
+        alpha: f32,
+        a: *const f32, lda: i32,
+        b: *const f32, ldb: i32,
+        beta: f32,
+        c: *mut f32, ldc: i32,
+    );
+}
+
 #[derive(Debug, Clone)]
 pub struct Tensor {
     pub data: Vec<f32>,
@@ -138,30 +152,26 @@ pub fn quantize(tensor: &Tensor) -> QuantizedTensor {
 
 }
 pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
-    let mut result = Tensor::new(vec![0.0], vec![a.shape[0], b.shape[1]]);
-    result.zeros();
-    let tile = 32;
-    for row_start in (0..a.shape[0]).step_by(tile) {
-        for col_start in (0..b.shape[1]).step_by(tile) {
-            for k_start in (0..a.shape[1]).step_by(tile) {
-                let row_end = (row_start + tile).min(a.shape[0]);
-                let k_end = (k_start + tile).min(a.shape[1]);
-                let col_end = (col_start + tile).min(b.shape[1]);
-                for row in row_start..row_end {
-                    for k in k_start..k_end {
-                        let a_val = a.data[row * a.shape[1] + k];
-                        for col in col_start..col_end {
-                            unsafe {
-                                *result.data.get_unchecked_mut(row * b.shape[1] + col) += 
-                                    a_val * *b.data.get_unchecked(k * b.shape[1] + col);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    let m = a.shape[0] as i32;
+    let n = b.shape[1] as i32;
+    let k = a.shape[1] as i32;
+    let mut result = vec![0.0f32; (m * n) as usize];
+    
+    unsafe {
+        cblas_sgemm(
+            101,        // CblasRowMajor
+            111,        // CblasNoTrans
+            111,        // CblasNoTrans
+            m, n, k,
+            1.0,        // alpha
+            a.data.as_ptr(), k,
+            b.data.as_ptr(), n,
+            0.0,        // beta
+            result.as_mut_ptr(), n,
+        );
     }
-    return result;
+    
+    Tensor::new(result, vec![m as usize, n as usize])
 }
 
 pub fn add(a: &Tensor, b: &Tensor) -> Tensor {
@@ -200,20 +210,46 @@ pub fn mul(a: &Tensor, b: &Tensor) -> Tensor {
     Tensor::new(data, a.shape.clone())
 }
 
-pub fn matmul_quantized(a: &Tensor, b: &QuantizedTensor) -> Tensor{
-    let mut result = Tensor::new(vec![0.0], vec![a.shape[0], b.shape[1]]);
+pub fn matmul_quantized(a: &Tensor, b: &QuantizedTensor) -> Tensor {
+    let m = a.shape[0];
+    let k = a.shape[1];
+    let n = b.shape[1];
     let factor = b.scale / 127.0;
-    result.zeros();
-    for row in 0..a.shape[0] {
-        for k in 0..a.shape[1] {
-            let a_val = a.data[row * a.shape[1] + k];
-            for col in 0..b.shape[1] {
-                unsafe {
-                    *result.data.get_unchecked_mut(row * b.shape[1] + col) += 
-                        a_val * *b.data.get_unchecked(k * b.shape[1] + col) as f32 * factor;
+
+    #[cfg(target_os = "macos")]
+    {
+        let b_f32: Vec<f32> = b.data.iter().map(|&x| x as f32 * factor).collect();
+        let mut result = vec![0.0f32; m * n];
+        unsafe {
+            cblas_sgemm(
+                101,                  // CblasRowMajor
+                111,                  // CblasNoTrans
+                111,                  // CblasNoTrans
+                m as i32, n as i32, k as i32,
+                1.0,
+                a.data.as_ptr(), k as i32,
+                b_f32.as_ptr(), n as i32,
+                0.0,
+                result.as_mut_ptr(), n as i32,
+            );
+        }
+        return Tensor::new(result, vec![m, n]);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut result = vec![0.0f32; m * n];
+        for row in 0..m {
+            for ki in 0..k {
+                let a_val = a.data[row * k + ki];
+                for col in 0..n {
+                    unsafe {
+                        *result.get_unchecked_mut(row * n + col) +=
+                            a_val * *b.data.get_unchecked(ki * n + col) as f32 * factor;
+                    }
                 }
             }
         }
+        Tensor::new(result, vec![m, n])
     }
-    return result;
 }

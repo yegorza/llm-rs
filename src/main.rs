@@ -15,7 +15,7 @@ fn main() {
     let speculative = std::env::args().any(|a| a == "--speculative" || a == "-s");
 
     // loading initial data
-    let main_model = loader::load_model("models/model.safetensors");
+    let main_model = loader::load_model("models/gpt2-medium.safetensors");
 
     let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
 
@@ -23,7 +23,7 @@ fn main() {
 
     let token_ids = tokenizer.encode("How many days in a week");
     let initial_len = token_ids.len();
-    let token_count = 50;
+    let token_count = 200;
 
     if speculative {
         run_speculative(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
@@ -121,6 +121,9 @@ fn run_speculative(
 
     let k = 5; // draft length
     let n_vocab = main_model.config.n_vocab;
+    let temperature = 0.8;
+    let top_p = 0.9;
+    let mut rng = rand::thread_rng();
 
     // Invariant maintained across the loop: each cache holds exactly the committed
     // tokens *except the last one* (length == token_ids.len() - 1). Every iteration
@@ -141,11 +144,11 @@ fn run_speculative(
         // Draft k tokens with the small model. This re-feeds last_token (regenerating
         // its position) and then each drafted token, leaving small_cache holding
         // [last_token, draft[0..k]] on top of the previously committed prefix.
-        let draft = draft_tokens(&small_model, &mut small_cache, last_token, k, &small_wte_t);
+        let draft = draft_tokens(&small_model, &mut small_cache, last_token, k, &small_wte_t, temperature, top_p, &mut rng);
 
         // Verify with a single main forward over [last_token, draft...]. Row j of the
         // output is the main model's distribution for the token at draft position j,
-        // so draft[j] is accepted iff it equals argmax(row j).
+        // so draft[j] is accepted iff it matches the sampled token from the main model.
         let mut verify_seq = Vec::with_capacity(k + 1);
         verify_seq.push(last_token);
         verify_seq.extend_from_slice(&draft);
@@ -154,7 +157,7 @@ fn run_speculative(
         let mut committed: Vec<usize> = Vec::new();
         let mut n_accept = 0;
         for j in 0..k {
-            let target = argmax(&all_logits.data[j * n_vocab..(j + 1) * n_vocab]);
+            let target = sample(&all_logits.data[j * n_vocab..(j + 1) * n_vocab], temperature, top_p, &mut rng);
             if draft[j] == target {
                 committed.push(draft[j]);
                 n_accept += 1;
@@ -166,7 +169,7 @@ fn run_speculative(
         }
         // All k drafts accepted -> the final row gives a free bonus token.
         if n_accept == k {
-            let bonus = argmax(&all_logits.data[k * n_vocab..(k + 1) * n_vocab]);
+            let bonus = sample(&all_logits.data[k * n_vocab..(k + 1) * n_vocab], temperature, top_p, &mut rng);
             committed.push(bonus);
         }
 
@@ -201,13 +204,44 @@ fn argmax(row: &[f32]) -> usize {
         .unwrap().0
 }
 
+fn sample(logits: &[f32], temperature: f32, top_p: f32, rng: &mut impl Rng) -> usize {
+    let n = logits.len();
+    let scaled: Vec<f32> = logits.iter().map(|x| x / temperature).collect();
+    let probs = Tensor::new(scaled, vec![n]).softmax();
 
-fn draft_tokens(model: &Model, cache: &mut Option<KVCache>, last_token: usize, k: usize, wte_t: &QuantizedTensor) -> Vec<usize> {
+    let mut indexed: Vec<(usize, f32)> =
+        probs.data.iter().enumerate().map(|(i, &p)| (i, p)).collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let mut filtered = vec![0.0f32; n];
+    let mut cumulative = 0.0f32;
+    for &(idx, prob) in &indexed {
+        filtered[idx] = prob;
+        cumulative += prob;
+        if cumulative > top_p {
+            break;
+        }
+    }
+
+    let sum: f32 = filtered.iter().sum();
+    let roll: f32 = rng.r#gen();
+    let mut cumulative = 0.0f32;
+    for (i, prob) in filtered.iter().enumerate() {
+        cumulative += prob / sum;
+        if cumulative > roll {
+            return i;
+        }
+    }
+    argmax(logits)
+}
+
+
+fn draft_tokens(model: &Model, cache: &mut Option<KVCache>, last_token: usize, k: usize, wte_t: &QuantizedTensor, temperature: f32, top_p: f32, rng: &mut impl Rng) -> Vec<usize> {
     let mut tokens = Vec::with_capacity(k);
     let mut current = last_token;
     for _ in 0..k {
         let logits = forward(model, &[current], cache, wte_t, false);
-        let next = argmax(&logits.data);
+        let next = sample(&logits.data, temperature, top_p, rng);
         tokens.push(next);
         current = next;
     }

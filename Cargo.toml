@@ -25,3 +25,5 @@ required-features = ["cli"]
 
 [build-dependencies]
 napi-build = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
