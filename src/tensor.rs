@@ -21,11 +21,6 @@ pub struct Tensor {
     pub shape: Vec<usize>
 }
 
-pub struct QuantizedTensor {
-    pub data: Vec<i8>,
-    pub scale: f32,
-    pub shape: Vec<usize>,
-}
 
 impl Tensor{
     pub fn new(data: Vec<f32>, shape: Vec<usize>) -> Self {
@@ -120,6 +115,28 @@ impl Tensor{
 
     }
 
+    pub fn rms_norm(&self, gamma: &Tensor, epsilon: f32) -> Tensor{
+        let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
+        let last_dim = self.shape[self.shape.len() - 1];
+        let n = last_dim as f32;
+        for i in 0..self.data.len() / last_dim{
+            let start = i * last_dim;
+            let end = start + last_dim;
+            let row: &[f32] = &self.data[start..end];
+            let mut mean_sq = 0.0;
+            for val in row.iter(){
+                mean_sq += (val).powi(2);
+            }
+            mean_sq = mean_sq / n;
+    
+            for (j, _val) in row.iter().enumerate(){
+                result.data[j+start] = (self.data[j+start]/(mean_sq + epsilon).sqrt())*gamma.data[j];
+            }
+        }
+
+        return result;
+    }
+
     pub fn gelu(&self) -> Tensor{
         let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
         for (i, val) in self.data.iter().enumerate(){
@@ -145,12 +162,6 @@ impl Tensor{
 }
 
 
-pub fn quantize(tensor: &Tensor) -> QuantizedTensor {
-    let absmax = tensor.data.iter().cloned().fold(0.0f32, |a, b| a.max(b.abs()));
-    let data: Vec<i8> = tensor.data.iter().map(|x| (x / absmax * 127.0).round() as i8).collect();
-    QuantizedTensor { data, scale: absmax, shape: tensor.shape.clone() }
-
-}
 pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
     let m = a.shape[0] as i32;
     let n = b.shape[1] as i32;
@@ -208,48 +219,4 @@ pub fn mul(a: &Tensor, b: &Tensor) -> Tensor {
         .map(|(x, y)| x * y)
         .collect();
     Tensor::new(data, a.shape.clone())
-}
-
-pub fn matmul_quantized(a: &Tensor, b: &QuantizedTensor) -> Tensor {
-    let m = a.shape[0];
-    let k = a.shape[1];
-    let n = b.shape[1];
-    let factor = b.scale / 127.0;
-
-    #[cfg(target_os = "macos")]
-    {
-        let b_f32: Vec<f32> = b.data.iter().map(|&x| x as f32 * factor).collect();
-        let mut result = vec![0.0f32; m * n];
-        unsafe {
-            cblas_sgemm(
-                101,                  // CblasRowMajor
-                111,                  // CblasNoTrans
-                111,                  // CblasNoTrans
-                m as i32, n as i32, k as i32,
-                1.0,
-                a.data.as_ptr(), k as i32,
-                b_f32.as_ptr(), n as i32,
-                0.0,
-                result.as_mut_ptr(), n as i32,
-            );
-        }
-        return Tensor::new(result, vec![m, n]);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let mut result = vec![0.0f32; m * n];
-        for row in 0..m {
-            for ki in 0..k {
-                let a_val = a.data[row * k + ki];
-                for col in 0..n {
-                    unsafe {
-                        *result.get_unchecked_mut(row * n + col) +=
-                            a_val * *b.data.get_unchecked(ki * n + col) as f32 * factor;
-                    }
-                }
-            }
-        }
-        Tensor::new(result, vec![m, n])
-    }
 }

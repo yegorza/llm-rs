@@ -1,5 +1,5 @@
 use rand::Rng;
-use crate::{model::KVCache, tensor::{Tensor, quantize}, tokenizer::Tokenizer};
+use crate::{model::KVCache, tensor::Tensor, tokenizer::Tokenizer};
 
 #[cfg(feature = "napi-binding")]
 #[macro_use]
@@ -16,7 +16,7 @@ pub fn generate(prompt: String, max_tokens: i32) -> String {
     let model = loader::load_model("models/gpt2-medium.safetensors");
     let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
     let mut cache: Option<KVCache> = None;
-    let wte_t = quantize(&model.wte.transpose());
+    let wte_t = model.wte.transpose();
 
     let mut token_ids = tokenizer.encode(&prompt);
     let mut logits = forward::forward(&model, &token_ids, &mut cache, &wte_t, false);

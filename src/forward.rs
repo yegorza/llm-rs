@@ -1,6 +1,6 @@
-use crate::{model::{KVCache, Model}, tensor::{QuantizedTensor, Tensor, add, matmul, matmul_quantized, mul}};
+use crate::{model::{KVCache, Model}, tensor::{Tensor, add, matmul, mul}};
 
-pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &QuantizedTensor, full_logits: bool) -> Tensor{
+pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &Tensor, full_logits: bool) -> Tensor{
     let cfg = &model.config;
 
     let position_offset = if cache.is_some() {
@@ -15,7 +15,7 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         let end = start + cfg.n_embed;
         let meaning_embedding = &model.wte.data[start..end];
         let pos_i = i + position_offset;
-        let position_embedding = &model.wpe.data[pos_i*cfg.n_embed..(pos_i+1)*cfg.n_embed];
+        let position_embedding = &model.wpe.as_ref().unwrap().data[pos_i*cfg.n_embed..(pos_i+1)*cfg.n_embed];
         for j in 0..cfg.n_embed {
             input.push(meaning_embedding[j] + position_embedding[j]);
         }
@@ -32,9 +32,9 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
     let scale = 1.0 / (cfg.head_dim as f32).sqrt();
 
     for (layer_idx, block) in model.blocks.iter().enumerate() {
-        let ln1_out = hidden.layer_norm(&block.ln_1_weight, &block.ln_1_bias, 1e-5);
+        let ln1_out = hidden.layer_norm(&block.ln_1_weight, &block.ln_1_bias.as_ref().unwrap(), 1e-5);
 
-        let qkv = add(&matmul_quantized(&ln1_out, &block.c_attn_weight), &block.c_attn_bias);
+        let qkv = add(&matmul(&ln1_out, block.c_attn_weight.as_ref().unwrap()), block.c_attn_bias.as_ref().unwrap());
         let (q, k, v) = split_into_qkv(&qkv);
         let q_heads = split_into_heads(&q, cfg.n_heads);
         let k_heads = split_into_heads(&k, cfg.n_heads);
@@ -55,7 +55,6 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         }
 
         let mut head_outputs: Vec<Tensor> = Vec::new();
-
         for i in 0..cfg.n_heads {
             let head_out = flash_attention(
                 &q_heads[i],
@@ -67,22 +66,22 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         }
 
         let concatenated = concatenate_heads(&head_outputs);
-        let attention_out = add(&matmul_quantized(&concatenated, &block.c_proj_weight), &block.c_proj_bias);
+        let attention_out = add(&matmul(&concatenated, &block.c_proj_weight), block.c_proj_bias.as_ref().unwrap());
         hidden = add(&hidden, &attention_out);
 
-        let ln2_out = hidden.layer_norm(&block.ln_2_weight, &block.ln_2_bias, 1e-5);
+        let ln2_out = hidden.layer_norm(&block.ln_2_weight, block.ln_2_bias.as_ref().unwrap(), 1e-5);
 
-        let fc_out_mul = &matmul_quantized(&ln2_out, &block.mlp_fc_weight);
-        let fc_out = add(&fc_out_mul, &block.mlp_fc_bias);
+        let fc_out_mul = matmul(&ln2_out, block.mlp_fc_weight.as_ref().unwrap());
+        let fc_out = add(&fc_out_mul, block.mlp_fc_bias.as_ref().unwrap());
         let gelu_out = fc_out.gelu();
-        let mut proj_out = matmul_quantized(&gelu_out, &block.mlp_proj_weight);
-        proj_out = add(&proj_out, &block.mlp_proj_bias);
+        let mut proj_out = matmul(&gelu_out, block.mlp_proj_weight.as_ref().unwrap());
+        proj_out = add(&proj_out, block.mlp_proj_bias.as_ref().unwrap());
         hidden = add(&hidden, &proj_out);
     }
 
-    hidden = hidden.layer_norm(&model.ln_f_weight, &model.ln_f_bias, 1e-5);
-    
-    let logits = matmul_quantized(&hidden, &wte_t);
+    hidden = hidden.layer_norm(&model.ln_f_weight, model.ln_f_bias.as_ref().unwrap(), 1e-5);
+
+    let logits = matmul(&hidden, wte_t);
     if full_logits {
         return logits;
     } else {

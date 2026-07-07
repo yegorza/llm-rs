@@ -1,9 +1,8 @@
 use std::io::Write;
 use std::time::Instant;
-use llm_rs::tensor::{QuantizedTensor, Tensor};
+use llm_rs::tensor::Tensor;
 use llm_rs::forward::forward;
 use llm_rs::model::{KVCache, Model};
-use llm_rs::tensor::quantize;
 use llm_rs::tokenizer::Tokenizer;
 use llm_rs::loader;
 use rand::Rng;
@@ -15,11 +14,11 @@ fn main() {
     let speculative = std::env::args().any(|a| a == "--speculative" || a == "-s");
 
     // loading initial data
-    let main_model = loader::load_model("models/gpt2-medium.safetensors");
+    let main_model = loader::load_llama("models/tinyllama-1b.safetensors");
 
     let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
 
-    let main_wte_t = quantize(&main_model.wte.transpose());
+    let main_wte_t = main_model.wte.transpose();
 
     let token_ids = tokenizer.encode("How many days in a week");
     let initial_len = token_ids.len();
@@ -35,7 +34,7 @@ fn main() {
 
 fn run_sample(
     main_model: &Model,
-    main_wte_t: &QuantizedTensor,
+    main_wte_t: &Tensor,
     tokenizer: &Tokenizer,
     mut token_ids: Vec<usize>,
     initial_len: usize,
@@ -105,7 +104,7 @@ fn run_sample(
 
 fn run_speculative(
     main_model: &Model,
-    main_wte_t: &QuantizedTensor,
+    main_wte_t: &Tensor,
     tokenizer: &Tokenizer,
     mut token_ids: Vec<usize>,
     initial_len: usize,
@@ -117,7 +116,7 @@ fn run_speculative(
     let mut small_cache: Option<KVCache> = None;
     let mut main_cache: Option<KVCache> = None;
 
-    let small_wte_t = quantize(&small_model.wte.transpose());
+    let small_wte_t = small_model.wte.transpose();
 
     let k = 5; // draft length
     let n_vocab = main_model.config.n_vocab;
@@ -236,7 +235,7 @@ fn sample(logits: &[f32], temperature: f32, top_p: f32, rng: &mut impl Rng) -> u
 }
 
 
-fn draft_tokens(model: &Model, cache: &mut Option<KVCache>, last_token: usize, k: usize, wte_t: &QuantizedTensor, temperature: f32, top_p: f32, rng: &mut impl Rng) -> Vec<usize> {
+fn draft_tokens(model: &Model, cache: &mut Option<KVCache>, last_token: usize, k: usize, wte_t: &Tensor, temperature: f32, top_p: f32, rng: &mut impl Rng) -> Vec<usize> {
     let mut tokens = Vec::with_capacity(k);
     let mut current = last_token;
     for _ in 0..k {
