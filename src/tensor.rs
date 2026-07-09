@@ -194,6 +194,29 @@ pub fn matmul(a: &Tensor, b: &Tensor) -> Tensor {
     Tensor::new(result, vec![m as usize, n as usize])
 }
 
+pub fn matmul_t(a: &Tensor, b: &Tensor) -> Tensor {
+    let m = a.shape[0] as i32;
+    let k = a.shape[1] as i32;
+    let n = b.shape[0] as i32;
+    let mut result = vec![0.0f32; (m * n) as usize];
+
+    unsafe {
+        cblas_sgemm(
+            101,
+            111,
+            112,
+            m, n, k,
+            1.0,
+            a.data.as_ptr(), k,
+            b.data.as_ptr(), k,
+            0.0,
+            result.as_mut_ptr(), n,
+        );
+    }
+
+    Tensor::new(result, vec![m as usize, n as usize])
+}
+
 pub fn add(a: &Tensor, b: &Tensor) -> Tensor {
     if a.shape.len() == 2 && b.shape.len() == 1 {
         let mut result = Tensor::new(a.data.clone(), a.shape.clone());
@@ -232,14 +255,16 @@ pub fn mul(a: &Tensor, b: &Tensor) -> Tensor {
 
 pub fn apply_rope(tensor: &Tensor, position_offset: usize, head_dim: usize, rope_theta: f32) -> Tensor{
     let mut result_data = tensor.data.clone();
+    let half = head_dim / 2;
     for i in 0..tensor.shape[0]{
         let position = position_offset + i;
-        for j in 0..head_dim/2{
+        let base = i * head_dim;
+        for j in 0..half{
             let theta = position as f32 / rope_theta.powf(2.0 * j as f32 / head_dim as f32);
-            let x = result_data[i * head_dim + 2 * j];
-            let y = result_data[i * head_dim + 2 * j + 1];
-            result_data[i * head_dim + 2 * j] = x * theta.cos() - y * theta.sin();
-            result_data[i * head_dim + 2 * j + 1] = x * theta.sin() + y * theta.cos();
+            let x = result_data[base + j];
+            let y = result_data[base + j + half];
+            result_data[base + j] = x * theta.cos() - y * theta.sin();
+            result_data[base + j + half] = x * theta.sin() + y * theta.cos();
         }
 
     }

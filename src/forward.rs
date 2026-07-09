@@ -1,4 +1,4 @@
-use crate::{model::{KVCache, Model, ModelType}, tensor::{Tensor, add, matmul, apply_rope, mul}};
+use crate::{model::{KVCache, Model, ModelType}, tensor::{Tensor, add, matmul, matmul_t, apply_rope, mul}};
 
 pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &Tensor, full_logits: bool) -> Tensor{
     let cfg = &model.config;
@@ -96,9 +96,9 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
             }
             ModelType::Llama => {
                 // new Llama attention + feedforward code
-                let q = matmul(&ln1_out, &block.q_proj.as_ref().unwrap());
-                let k = matmul(&ln1_out, &block.k_proj.as_ref().unwrap());
-                let v = matmul(&ln1_out, &block.v_proj.as_ref().unwrap());
+                let q = matmul_t(&ln1_out, &block.q_proj.as_ref().unwrap());
+                let k = matmul_t(&ln1_out, &block.k_proj.as_ref().unwrap());
+                let v = matmul_t(&ln1_out, &block.v_proj.as_ref().unwrap());
 
                 let mut q_heads = split_into_heads(&q, cfg.n_heads);
                 let mut k_heads = split_into_heads(&k, cfg.n_kv_heads);
@@ -144,12 +144,16 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
                     head_outputs.push(head_out);
                 }
 
+                let concatenated = concatenate_heads(&head_outputs);
+                let attention_out = matmul_t(&concatenated, &block.c_proj_weight);
+                hidden = add(&hidden, &attention_out);
+
                 let ln2_out = hidden.rms_norm(&block.ln_2_weight, cfg.rms_norm_eps);
                 // SwiGLU two input projections, element-wise multiply after activation
-                let gate = matmul(&ln2_out, block.gate_proj.as_ref().unwrap());
-                let up = matmul(&ln2_out, block.up_proj.as_ref().unwrap());
+                let gate = matmul_t(&ln2_out, block.gate_proj.as_ref().unwrap());
+                let up = matmul_t(&ln2_out, block.up_proj.as_ref().unwrap());
                 let activated = mul(&gate.silu(),&up);  // silu(gate) * up
-                let down = matmul(&activated, block.down_proj.as_ref().unwrap());
+                let down = matmul_t(&activated, block.down_proj.as_ref().unwrap());
                 hidden = add(&hidden, &down);
             }
         }
@@ -162,11 +166,9 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
 
     let logits = match &model.config.model_type {
         ModelType::GPT2 => matmul(&hidden, wte_t),
-        ModelType::Llama => matmul(&hidden, model.lm_head.as_ref().unwrap()),
+        ModelType::Llama => matmul_t(&hidden, model.lm_head.as_ref().unwrap()),
     };
 
-    println!("logits shape: {:?}", logits.shape);
-    println!("cfg.n_vocab: {}", cfg.n_vocab);
 
     if full_logits {
         return logits;
@@ -282,6 +284,7 @@ fn flash_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Tensor{
             for e in 0..q.shape[1] {
                 output[e] = output[e] * correction;
             }
+            
             // update the values for each tile
             for t in 0..tile_len{
                 let new_weight = (scores.data[t] - new_max).exp() / d_i;

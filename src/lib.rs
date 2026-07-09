@@ -55,7 +55,7 @@ pub fn generate(prompt: String, max_tokens: i32) -> String {
             }
         }
 
-        output.push_str(&tokenizer.decode(&next_token));
+        output.push_str(&tokenizer.decode(&[next_token]));
         token_ids.push(next_token);
         logits = forward::forward(&model, &[*token_ids.last().unwrap()], &mut cache, &wte_t,false);
     }

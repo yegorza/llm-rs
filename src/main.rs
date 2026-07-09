@@ -3,49 +3,69 @@ use std::time::Instant;
 use llm_rs::tensor::Tensor;
 use llm_rs::forward::forward;
 use llm_rs::model::{KVCache, Model};
-use llm_rs::tokenizer::Tokenizer;
+use llm_rs::tokenizer::{Tokenizer, LlamaTokenizer, TextTokenizer};
 use llm_rs::loader;
 use rand::Rng;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
 
     // Speculative decoding is opt-in behind the --speculative (-s) flag; otherwise
     // we run top-p sampling with the main model only.
-    let speculative = std::env::args().any(|a| a == "--speculative" || a == "-s");
+    let speculative = args.iter().any(|a| a == "--speculative" || a == "-s");
 
-    // loading initial data
-    let main_model = loader::load_llama("models/tinyllama-1b.safetensors");
+    // Model family is selected with --model (-m) <gpt2|llama>; defaults to llama.
+    let model_name = args.iter()
+        .position(|a| a == "--model" || a == "-m")
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+        .unwrap_or("llama");
 
-    let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
-
-    let main_wte_t = main_model.wte.transpose();
-
-    let token_ids = tokenizer.encode("How many days in a week");
-    let initial_len = token_ids.len();
+    let prompt = "How many days in a week";
     let token_count = 200;
 
-    let model = loader::load_llama("models/tinyllama-1b.safetensors");
-    let mut cache: Option<KVCache> = None;
-    let token_ids = vec![1, 15043, 3186]; // BOS + "Hello world" in Llama tokenizer
-    let logits = forward(&model, &token_ids, &mut cache, &Tensor::new(vec![], vec![]), false);
-    println!("logits shape: {:?}", logits.shape);
-    let top_token = logits.data.iter().enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-        .unwrap().0;
-    println!("top token: {}", top_token);
+    match model_name {
+        "gpt2" => {
+            let main_model = loader::load_model("models/gpt2-medium.safetensors");
+            let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
+            let main_wte_t = main_model.wte.transpose();
 
-    // if speculative {
-    //     run_speculative(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
-    // } else {
-    //     run_sample(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
-    // }
+            let token_ids = tokenizer.encode(prompt);
+            let initial_len = token_ids.len();
+
+            if speculative {
+                run_speculative(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
+            } else {
+                run_sample(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
+            }
+        }
+        "llama" => {
+            let main_model = loader::load_llama("models/tinyllama-1b.safetensors");
+            let tokenizer = LlamaTokenizer::new("models/llama-tokenizer.json");
+            // Llama's forward pass uses model.lm_head for the output projection
+            // instead of a tied wte_t, so this is just an unused placeholder.
+            let main_wte_t = Tensor::new(vec![], vec![]);
+
+            let token_ids = tokenizer.encode(prompt);
+            let initial_len = token_ids.len();
+
+            if speculative {
+                eprintln!("--speculative needs a draft model that shares the main model's vocab; only --model gpt2 supports it. Running standard sampling instead.");
+            }
+            run_sample(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
+        }
+        other => {
+            eprintln!("unknown --model '{}': expected 'gpt2' or 'llama'", other);
+            std::process::exit(1);
+        }
+    }
 }
 
 
 fn run_sample(
     main_model: &Model,
     main_wte_t: &Tensor,
-    tokenizer: &Tokenizer,
+    tokenizer: &dyn TextTokenizer,
     mut token_ids: Vec<usize>,
     initial_len: usize,
     token_count: usize,
@@ -98,7 +118,7 @@ fn run_sample(
             }
         }
 
-        print!("{}", tokenizer.decode(&next));
+        print!("{}", tokenizer.decode(&[next]));
         std::io::stdout().flush().unwrap();
         token_ids.push(next);
     }
@@ -115,7 +135,7 @@ fn run_sample(
 fn run_speculative(
     main_model: &Model,
     main_wte_t: &Tensor,
-    tokenizer: &Tokenizer,
+    tokenizer: &dyn TextTokenizer,
     mut token_ids: Vec<usize>,
     initial_len: usize,
     token_count: usize,
@@ -186,7 +206,7 @@ fn run_speculative(
         total_accepted += n_accept;
 
         for &tok in &committed {
-            print!("{}", tokenizer.decode(&tok));
+            print!("{}", tokenizer.decode(&[tok]));
             std::io::stdout().flush().unwrap();
             token_ids.push(tok);
         }
