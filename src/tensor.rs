@@ -146,6 +146,15 @@ impl Tensor{
         return result;
     }
 
+    pub fn silu(&self) -> Tensor{
+        let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
+        for (i, val) in self.data.iter().enumerate(){
+            result.data[i] = val * (1.0 / (1.0 + (-val).exp()));
+        }
+
+        return result;
+    }
+
     pub fn apply_causal_mask(&self) -> Tensor{
         let mut result: Tensor = Tensor::new(self.data.clone(), self.shape.clone());
         let last_dim = self.shape[self.shape.len() - 1];
@@ -219,4 +228,20 @@ pub fn mul(a: &Tensor, b: &Tensor) -> Tensor {
         .map(|(x, y)| x * y)
         .collect();
     Tensor::new(data, a.shape.clone())
+}
+
+pub fn apply_rope(tensor: &Tensor, position_offset: usize, head_dim: usize, rope_theta: f32) -> Tensor{
+    let mut result_data = tensor.data.clone();
+    for i in 0..tensor.shape[0]{
+        let position = position_offset + i;
+        for j in 0..head_dim/2{
+            let theta = position as f32 / rope_theta.powf(2.0 * j as f32 / head_dim as f32);
+            let x = result_data[i * head_dim + 2 * j];
+            let y = result_data[i * head_dim + 2 * j + 1];
+            result_data[i * head_dim + 2 * j] = x * theta.cos() - y * theta.sin();
+            result_data[i * head_dim + 2 * j + 1] = x * theta.sin() + y * theta.cos();
+        }
+
+    }
+    Tensor::new(result_data, tensor.shape.clone())
 }

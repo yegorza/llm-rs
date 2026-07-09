@@ -1,4 +1,4 @@
-use crate::{model::{KVCache, Model}, tensor::{Tensor, add, matmul, mul}};
+use crate::{model::{KVCache, Model, ModelType}, tensor::{Tensor, add, matmul, apply_rope, mul}};
 
 pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, wte_t: &Tensor, full_logits: bool) -> Tensor{
     let cfg = &model.config;
@@ -15,9 +15,19 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
         let end = start + cfg.n_embed;
         let meaning_embedding = &model.wte.data[start..end];
         let pos_i = i + position_offset;
-        let position_embedding = &model.wpe.as_ref().unwrap().data[pos_i*cfg.n_embed..(pos_i+1)*cfg.n_embed];
-        for j in 0..cfg.n_embed {
-            input.push(meaning_embedding[j] + position_embedding[j]);
+        match &model.config.model_type {
+            ModelType::GPT2 => {
+                let position_embedding = &model.wpe.as_ref().unwrap().data[pos_i * cfg.n_embed..(pos_i + 1) * cfg.n_embed];
+                for j in 0..cfg.n_embed {
+                    input.push(meaning_embedding[j] + position_embedding[j]);
+                }
+            }
+            ModelType::Llama => {
+                // no positional embedding — RoPE handles position inside attention
+                for j in 0..cfg.n_embed {
+                    input.push(meaning_embedding[j]);
+                }
+            }
         }
     }
     let mut hidden = Tensor::new(input, vec![token_ids.len(), cfg.n_embed]);
@@ -32,56 +42,132 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
     let scale = 1.0 / (cfg.head_dim as f32).sqrt();
 
     for (layer_idx, block) in model.blocks.iter().enumerate() {
-        let ln1_out = hidden.layer_norm(&block.ln_1_weight, &block.ln_1_bias.as_ref().unwrap(), 1e-5);
 
-        let qkv = add(&matmul(&ln1_out, block.c_attn_weight.as_ref().unwrap()), block.c_attn_bias.as_ref().unwrap());
-        let (q, k, v) = split_into_qkv(&qkv);
-        let q_heads = split_into_heads(&q, cfg.n_heads);
-        let k_heads = split_into_heads(&k, cfg.n_heads);
-        let v_heads = split_into_heads(&v, cfg.n_heads);
+        let ln1_out = match &model.config.model_type {
+            ModelType::GPT2 => hidden.layer_norm(&block.ln_1_weight, block.ln_1_bias.as_ref().unwrap(), 1e-5),
+            ModelType::Llama => hidden.rms_norm(&block.ln_1_weight, model.config.rms_norm_eps),
+        };
 
-        if cache.as_ref().unwrap().k[layer_idx].is_empty() {
-            for head_idx in 0..cfg.n_heads {
-                let c = cache.as_mut().unwrap();
-                c.k[layer_idx].push(k_heads[head_idx].clone());
-                c.v[layer_idx].push(v_heads[head_idx].clone());
+        match &model.config.model_type {
+            ModelType::GPT2 => {
+                let qkv = add(&matmul(&ln1_out, block.c_attn_weight.as_ref().unwrap()), block.c_attn_bias.as_ref().unwrap());
+                let (q, k, v) = split_into_qkv(&qkv);
+                let q_heads = split_into_heads(&q, cfg.n_heads);
+                let k_heads = split_into_heads(&k, cfg.n_heads);
+                let v_heads = split_into_heads(&v, cfg.n_heads);
+
+                if cache.as_ref().unwrap().k[layer_idx].is_empty() {
+                    for head_idx in 0..cfg.n_heads {
+                        let c = cache.as_mut().unwrap();
+                        c.k[layer_idx].push(k_heads[head_idx].clone());
+                        c.v[layer_idx].push(v_heads[head_idx].clone());
+                    }
+                } else {
+                    for head_idx in 0..cfg.n_heads {
+                        let c = cache.as_mut().unwrap();
+                        c.k[layer_idx][head_idx] = concat(&c.k[layer_idx][head_idx], &k_heads[head_idx]);
+                        c.v[layer_idx][head_idx] = concat(&c.v[layer_idx][head_idx], &v_heads[head_idx]);
+                    }
+                }
+
+                let mut head_outputs: Vec<Tensor> = Vec::new();
+                for i in 0..cfg.n_heads {
+                    let head_out = flash_attention(
+                        &q_heads[i],
+                        &cache.as_ref().unwrap().k[layer_idx][i],
+                        &cache.as_ref().unwrap().v[layer_idx][i],
+                        scale
+                    );
+                    head_outputs.push(head_out);
+                }
+
+                let concatenated = concatenate_heads(&head_outputs);
+                let attention_out = add(&matmul(&concatenated, &block.c_proj_weight), block.c_proj_bias.as_ref().unwrap());
+                hidden = add(&hidden, &attention_out);
+
+                let ln2_out = hidden.layer_norm(&block.ln_2_weight, block.ln_2_bias.as_ref().unwrap(), 1e-5);
+
+                let fc_out_mul = matmul(&ln2_out, block.mlp_fc_weight.as_ref().unwrap());
+                let fc_out = add(&fc_out_mul, block.mlp_fc_bias.as_ref().unwrap());
+                let gelu_out = fc_out.gelu();
+                let mut proj_out = matmul(&gelu_out, block.mlp_proj_weight.as_ref().unwrap());
+                proj_out = add(&proj_out, block.mlp_proj_bias.as_ref().unwrap());
+                hidden = add(&hidden, &proj_out);
             }
-        } else {
-            for head_idx in 0..cfg.n_heads {
-                let c = cache.as_mut().unwrap();
-                c.k[layer_idx][head_idx] = concat(&c.k[layer_idx][head_idx], &k_heads[head_idx]);
-                c.v[layer_idx][head_idx] = concat(&c.v[layer_idx][head_idx], &v_heads[head_idx]);
+            ModelType::Llama => {
+                // new Llama attention + feedforward code
+                let q = matmul(&ln1_out, &block.q_proj.as_ref().unwrap());
+                let k = matmul(&ln1_out, &block.k_proj.as_ref().unwrap());
+                let v = matmul(&ln1_out, &block.v_proj.as_ref().unwrap());
+
+                let mut q_heads = split_into_heads(&q, cfg.n_heads);
+                let mut k_heads = split_into_heads(&k, cfg.n_kv_heads);
+                let mut v_heads = split_into_heads(&v, cfg.n_kv_heads);
+
+
+                // apple RoPE to encode position into attention score
+                for i in 0..cfg.n_heads {
+                    q_heads[i] = apply_rope(&q_heads[i], position_offset, cfg.head_dim, cfg.rope_theta);
+                }
+                for i in 0..cfg.n_kv_heads {
+                    k_heads[i] = apply_rope(&k_heads[i], position_offset, cfg.head_dim, cfg.rope_theta);
+                }
+
+                let mut head_outputs: Vec<Tensor> = Vec::new();
+
+                // either add to empty cache or update current one
+                if cache.as_ref().unwrap().k[layer_idx].is_empty() {
+                    for head_idx in 0..cfg.n_kv_heads {
+                        let c = cache.as_mut().unwrap();
+                        c.k[layer_idx].push(k_heads[head_idx].clone());
+                        c.v[layer_idx].push(v_heads[head_idx].clone());
+                    }
+                } else {
+                    for head_idx in 0..cfg.n_kv_heads {
+                        let c = cache.as_mut().unwrap();
+                        c.k[layer_idx][head_idx] = concat(&c.k[layer_idx][head_idx], &k_heads[head_idx]);
+                        c.v[layer_idx][head_idx] = concat(&c.v[layer_idx][head_idx], &v_heads[head_idx]);
+                    }
+                }
+
+                // GQA so n Q heads share n_kv_heads K/V heads
+                // each group size is n/n_kv_heads
+                let group_size = cfg.n_heads / cfg.n_kv_heads;
+                for i in 0..cfg.n_heads {
+                    let kv_idx = i/group_size;
+                    let head_out = flash_attention(
+                        &q_heads[i],
+                        &cache.as_ref().unwrap().k[layer_idx][kv_idx],
+                        &cache.as_ref().unwrap().v[layer_idx][kv_idx],
+                        scale
+                    );
+                    head_outputs.push(head_out);
+                }
+
+                let ln2_out = hidden.rms_norm(&block.ln_2_weight, cfg.rms_norm_eps);
+                // SwiGLU two input projections, element-wise multiply after activation
+                let gate = matmul(&ln2_out, block.gate_proj.as_ref().unwrap());
+                let up = matmul(&ln2_out, block.up_proj.as_ref().unwrap());
+                let activated = mul(&gate.silu(),&up);  // silu(gate) * up
+                let down = matmul(&activated, block.down_proj.as_ref().unwrap());
+                hidden = add(&hidden, &down);
             }
         }
-
-        let mut head_outputs: Vec<Tensor> = Vec::new();
-        for i in 0..cfg.n_heads {
-            let head_out = flash_attention(
-                &q_heads[i],
-                &cache.as_ref().unwrap().k[layer_idx][i],
-                &cache.as_ref().unwrap().v[layer_idx][i],
-                scale
-            );
-            head_outputs.push(head_out);
-        }
-
-        let concatenated = concatenate_heads(&head_outputs);
-        let attention_out = add(&matmul(&concatenated, &block.c_proj_weight), block.c_proj_bias.as_ref().unwrap());
-        hidden = add(&hidden, &attention_out);
-
-        let ln2_out = hidden.layer_norm(&block.ln_2_weight, block.ln_2_bias.as_ref().unwrap(), 1e-5);
-
-        let fc_out_mul = matmul(&ln2_out, block.mlp_fc_weight.as_ref().unwrap());
-        let fc_out = add(&fc_out_mul, block.mlp_fc_bias.as_ref().unwrap());
-        let gelu_out = fc_out.gelu();
-        let mut proj_out = matmul(&gelu_out, block.mlp_proj_weight.as_ref().unwrap());
-        proj_out = add(&proj_out, block.mlp_proj_bias.as_ref().unwrap());
-        hidden = add(&hidden, &proj_out);
     }
 
-    hidden = hidden.layer_norm(&model.ln_f_weight, model.ln_f_bias.as_ref().unwrap(), 1e-5);
+   hidden = match &model.config.model_type {
+    ModelType::GPT2 => hidden.layer_norm(&model.ln_f_weight, model.ln_f_bias.as_ref().unwrap(), 1e-5),
+    ModelType::Llama => hidden.rms_norm(&model.ln_f_weight, cfg.rms_norm_eps),
+    };
 
-    let logits = matmul(&hidden, wte_t);
+    let logits = match &model.config.model_type {
+        ModelType::GPT2 => matmul(&hidden, wte_t),
+        ModelType::Llama => matmul(&hidden, model.lm_head.as_ref().unwrap()),
+    };
+
+    println!("logits shape: {:?}", logits.shape);
+    println!("cfg.n_vocab: {}", cfg.n_vocab);
+
     if full_logits {
         return logits;
     } else {

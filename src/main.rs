@@ -24,11 +24,21 @@ fn main() {
     let initial_len = token_ids.len();
     let token_count = 200;
 
-    if speculative {
-        run_speculative(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
-    } else {
-        run_sample(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
-    }
+    let model = loader::load_llama("models/tinyllama-1b.safetensors");
+    let mut cache: Option<KVCache> = None;
+    let token_ids = vec![1, 15043, 3186]; // BOS + "Hello world" in Llama tokenizer
+    let logits = forward(&model, &token_ids, &mut cache, &Tensor::new(vec![], vec![]), false);
+    println!("logits shape: {:?}", logits.shape);
+    let top_token = logits.data.iter().enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .unwrap().0;
+    println!("top token: {}", top_token);
+
+    // if speculative {
+    //     run_speculative(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
+    // } else {
+    //     run_sample(&main_model, &main_wte_t, &tokenizer, token_ids, initial_len, token_count);
+    // }
 }
 
 
