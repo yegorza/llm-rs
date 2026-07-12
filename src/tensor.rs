@@ -1,5 +1,4 @@
 use core::panic;
-use std::f32::NEG_INFINITY;
 
 #[cfg(target_os = "macos")]
 #[link(name = "Accelerate", kind = "framework")]

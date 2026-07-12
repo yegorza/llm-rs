@@ -7,6 +7,15 @@ use llm_rs::tokenizer::{Tokenizer, LlamaTokenizer, TextTokenizer};
 use llm_rs::loader;
 use rand::Rng;
 
+/// Returns the value following the first arg matching one of `names`, e.g.
+/// `flag_value(&args, &["--weights", "-w"])` for `... --weights foo.safetensors ...`.
+fn flag_value<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
+    args.iter()
+        .position(|a| names.contains(&a.as_str()))
+        .and_then(|i| args.get(i + 1))
+        .map(|s| s.as_str())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -15,19 +24,21 @@ fn main() {
     let speculative = args.iter().any(|a| a == "--speculative" || a == "-s");
 
     // Model family is selected with --model (-m) <gpt2|llama>; defaults to llama.
-    let model_name = args.iter()
-        .position(|a| a == "--model" || a == "-m")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str())
-        .unwrap_or("llama");
+    let model_name = flag_value(&args, &["--model", "-m"]).unwrap_or("llama");
 
-    let prompt = "How many days in a week";
-    let token_count = 200;
+    let prompt = flag_value(&args, &["--prompt", "-p"]).unwrap_or("How many days in a week");
+    let token_count: usize = flag_value(&args, &["--tokens", "-n"])
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
 
     match model_name {
         "gpt2" => {
-            let main_model = loader::load_model("models/gpt2-medium.safetensors");
-            let tokenizer = Tokenizer::new("models/vocab.json", "models/merges.txt");
+            let weights = flag_value(&args, &["--weights", "-w"]).unwrap_or("models/gpt2-medium.safetensors");
+            let vocab = flag_value(&args, &["--vocab"]).unwrap_or("models/vocab.json");
+            let merges = flag_value(&args, &["--merges"]).unwrap_or("models/merges.txt");
+
+            let main_model = loader::load_model(weights);
+            let tokenizer = Tokenizer::new(vocab, merges);
             let main_wte_t = main_model.wte.transpose();
 
             let token_ids = tokenizer.encode(prompt);
@@ -40,8 +51,11 @@ fn main() {
             }
         }
         "llama" => {
-            let main_model = loader::load_llama("models/tinyllama-1b.safetensors");
-            let tokenizer = LlamaTokenizer::new("models/llama-tokenizer.json");
+            let weights = flag_value(&args, &["--weights", "-w"]).unwrap_or("models/tinyllama-1b.safetensors");
+            let tokenizer_path = flag_value(&args, &["--tokenizer", "-t"]).unwrap_or("models/llama-tokenizer.json");
+
+            let main_model = loader::load_llama(weights);
+            let tokenizer = LlamaTokenizer::new(tokenizer_path);
             // Llama's forward pass uses model.lm_head for the output projection
             // instead of a tied wte_t, so this is just an unused placeholder.
             let main_wte_t = Tensor::new(vec![], vec![]);

@@ -74,7 +74,6 @@ pub fn load_llama(path: &str) -> Model {
 
     let wte = load_tensor(&file_data, &header, header_size, "model.embed_tokens.weight");
     let ln_f_weight = load_tensor(&file_data, &header, header_size, "model.norm.weight");
-    let lm_head = load_tensor(&file_data, &header, header_size, "lm_head.weight");
 
     let mut blocks = Vec::new();
     for i in 0..22 {
@@ -122,12 +121,6 @@ pub fn load_llama(path: &str) -> Model {
         ln_f_bias: None,
         lm_head: Some(load_tensor(&file_data, &header, header_size, "lm_head.weight")),
     }
-}
-
-fn bf16_to_f32(bytes: &[u8]) -> f32 {
-    let bits = u16::from_le_bytes([bytes[0], bytes[1]]);
-    let f32_bits = (bits as u32) << 16;
-    f32::from_bits(f32_bits)
 }
 
 fn load_tensor(file_data: &[u8], header: &Value, header_size: u64, name: &str) -> Tensor{

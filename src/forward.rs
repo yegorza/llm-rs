@@ -102,7 +102,7 @@ pub fn forward(model: &Model, token_ids: &[usize], cache: &mut Option<KVCache>, 
 
                 let mut q_heads = split_into_heads(&q, cfg.n_heads);
                 let mut k_heads = split_into_heads(&k, cfg.n_kv_heads);
-                let mut v_heads = split_into_heads(&v, cfg.n_kv_heads);
+                let v_heads = split_into_heads(&v, cfg.n_kv_heads);
 
 
                 // apple RoPE to encode position into attention score
