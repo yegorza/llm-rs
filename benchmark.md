@@ -1,34 +1,44 @@
 # Benchmarks
 
-## GPT-2 124M — Apple M-series, single-threaded
+## Apple M1, single-threaded, release build
 
-**2026-06-16**
+### Optimization Progression — GPT-2 Small (124M)
 
-- 6.12 tokens/sec
-- Memory: ~655MB (f32), ~448MB (INT8 quantized)
-- KV cache enabled
+| Date   | Optimization                                     | tok/s | Notes                          |
+| ------ | ------------------------------------------------ | ----- | ------------------------------ |
+| Jun 7  | Baseline (direct .data[] indexing, release mode) | 6.12  | First recorded benchmark       |
+| Jun 18 | Loop reorder + unsafe get_unchecked              | 6.39  | Minor gain                     |
+| Jun 18 | Flash attention (tiled, T=32)                    | 6.75  | O(n) memory, slight speed gain |
+| Jun 26 | Apple Accelerate (cblas_sgemm)                   | 30.34 | +5x, M1 AMX unit               |
 
-### GPT-2 Medium (350M)
+### Multi-Model Comparison (Apple Accelerate enabled)
 
-- Tokens/sec: 2.31
-- Config: 24 layers, 16 heads, 1024 embed dim
+| Model        | Parameters | Architecture                       | tok/s (50 tokens) | tok/s (200 tokens) |
+| ------------ | ---------- | ---------------------------------- | ----------------- | ------------------ |
+| GPT-2 Small  | 124M       | 12 layers, 12 heads, 768 dim       | 30.34             | 18.77              |
+| GPT-2 Medium | 350M       | 24 layers, 16 heads, 1024 dim      | ~18               | 6.61               |
+| TinyLlama    | 1.1B       | 22 layers, 32Q/4KV heads, 2048 dim | ~6                | 3.18               |
 
-**2026-07-01**
+### Speculative Decoding (GPT-2 Small draft + Medium target)
 
-- After adding
+| Metric             | Value                                             |
+| ------------------ | ------------------------------------------------- |
+| tok/s              | 0.82                                              |
+| Acceptance rate    | 30.5%                                             |
+| vs baseline Medium | Slower                                            |
+| Notes              | CPU overhead exceeds gains at 30% acceptance rate |
 
-### GPT-2 Medium (350M)
+### Memory Usage — GPT-2 Small
 
-- tokens: 200
-- time: 30.25s
-- tokens/sec: 6.61
+| Configuration  | Memory |
+| -------------- | ------ |
+| f32 weights    | ~655MB |
+| INT8 quantized | ~448MB |
+| Savings        | ~30%   |
 
-## TinyLlama 1.1B — Apple M-series, single-threaded
+### Key Findings
 
-**2026-07-09**
-
-### TinyLlama-1.1B (22 layers, 32 heads / 4 KV heads, 2048 embed dim)
-
-- tokens: 200
-- time: 62.82s
-- tokens/sec: 3.18
+- Apple Accelerate BLAS was the single biggest optimization — 5x speedup from one change
+- Flash attention saves O(n²) → O(n) memory with minimal speed impact at short sequences
+- Speculative decoding requires >60% acceptance rate to be worthwhile on CPU
+- tok/s degrades with sequence length due to growing KV cache attention cost
